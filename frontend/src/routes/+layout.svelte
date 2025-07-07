@@ -116,8 +116,7 @@
     margin: 0;
     font-family: 'Inter', sans-serif;
     background-color: var(--bg-dark);
-        background-image: url('/images.png'); /* Change this to your desired image */
-
+    background-image: url('/images.png');
     color: var(--text-light);
     line-height: 1.6;
     position: relative;
@@ -131,15 +130,34 @@
     left: 0;
     width: 100%;
     height: 100%;
-    background-image: url('/images.png'); /* Change this to your desired image */
-    background-position: center center;
-    background-size: cover; /* or 50% or contain */
+    background-image: url('/images.png');
+    background-position: 0% 0%;
+    background-size: cover;
     background-repeat: no-repeat;
     opacity: 0.08;
     filter: grayscale(100%) brightness(60%);
     z-index: -2;
     pointer-events: none;
+    animation: move-bg 40s linear infinite;
   }
+ @keyframes move-bg {
+  0% {
+    background-position: 0% 0%;
+  }
+  25% {
+    background-position: 50% 25%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  75% {
+    background-position: 50% 75%;
+  }
+  100% {
+    background-position: 0% 100%;
+  }
+}
+
   :global(body)::after {
     content: '';
     position: fixed;

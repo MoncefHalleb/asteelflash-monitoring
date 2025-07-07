@@ -8,9 +8,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 from collections import defaultdict
-from typing import Literal, Optional, List
+from typing import Literal, Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from typing import List, Dict, Optional
+
 
 SECRET_KEY = "0fd58da17a8195ddf5c5e1d91f8391752550b47e29e56575b7d1fe15080a308c"
 ALGORITHM = "HS256"
@@ -37,7 +39,6 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Existing table definitions (Board, Famille, Intervention, Mesures, Test, User) remain unchanged
 class Board(Base):
     __tablename__ = 'abb_dbo_board'
     Id = Column(Integer, primary_key=True, autoincrement=True)
@@ -133,12 +134,10 @@ class BoardInfo(BaseModel):
     prix: Optional[float] = None
     class Config:
         from_attributes = True
-
 class RefStat(BaseModel):
     ref_asteel: str
     good_count: int
     bad_count: int
-
 class RefPriceStat(BaseModel):
     ref_asteel: str
     good_count: int
@@ -153,9 +152,9 @@ class QualityMetrics(BaseModel):
     bad_quantity: int
     defect_details: dict
     ref_stats: List[RefStat] = []
-    ref_price_stats: List[RefPriceStat] = []
-    yield_rate: Optional[float] = None  # New field for yield rate
-    total_revenue: Optional[float] = None  # New field for total revenue
+    ref_price_stats: List[RefPriceStat] = []  # Ajouté ici
+
+
 
 class Token(BaseModel):
     access_token: str
@@ -294,9 +293,8 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         data={"sub": user.username, "role": user.role},
         expires_delta=access_token_expires
     )
-    return {" swoopity swoop access_token": access_token, "token_type": "bearer"}
+    return {"access_token": access_token, "token_type": "bearer"}
 
-# Existing endpoints (/api/boards, /api/boards/{board_id}, etc.) remain unchanged
 @app.get("/api/boards", response_model=list[BoardInfo])
 async def get_all_boards(current_user: UserInDB = Depends(get_current_user)):
     query = text("""
@@ -361,7 +359,7 @@ async def get_all_boards(current_user: UserInDB = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.post("/api/boards/", response_model=BoardInfo, status_code=status.HTTP_201_CREATED)
-async def create_board(board_data: BoardCreate, current_user: UserInDB = Depends(require_admin)):
+async def create_board(board_data: BoardCreate, current_user: UserInDB = Depends(require_admin())):
     columns = []
     values = []
     params = {}
@@ -437,7 +435,7 @@ async def create_board(board_data: BoardCreate, current_user: UserInDB = Depends
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.get("/api/boards/{board_id}", response_model=BoardInfo)
-async def get_board_by_id(board_id: int, current_user: UserInDB = Depends(require_admin)):
+async def get_board_by_id(board_id: int, current_user: UserInDB = Depends(require_admin())):
     query = text("""
         SELECT
             CAST(b.Id AS UNSIGNED) AS id,
@@ -500,7 +498,7 @@ async def get_board_by_id(board_id: int, current_user: UserInDB = Depends(requir
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 @app.put("/api/boards/{board_id}", response_model=BoardInfo)
-async def update_board(board_id: int, board_data: BoardUpdate, current_user: UserInDB = Depends(require_admin)):
+async def update_board(board_id: int, board_data: BoardUpdate, current_user: UserInDB = Depends(require_admin())):
     update_fields = board_data.model_dump(exclude_unset=True)
     set_clauses = []
     params = {"board_id": board_id}
@@ -578,7 +576,7 @@ async def update_board(board_id: int, board_data: BoardUpdate, current_user: Use
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.delete("/api/boards/{board_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_board(board_id: int, current_user: UserInDB = Depends(require_admin)):
+async def delete_board(board_id: int, current_user: UserInDB = Depends(require_admin())):
     delete_query = text("DELETE FROM abb_dbo_board WHERE Id = :board_id")
     try:
         with engine.begin() as conn:
@@ -589,123 +587,107 @@ async def delete_board(board_id: int, current_user: UserInDB = Depends(require_a
         raise HTTPException(status_code=500, detail=f"Database error deleting board: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-@app.get("/api/quality-metrics", response_model=List[QualityMetrics])
+@app.get("/api/quality-metrics", response_model=QualityMetrics)
 async def get_quality_metrics(
-    start_date: date = Query(...),
-    end_date: date = Query(...),
+    selected_date: date = Query(...),
     start_time: time = Query(time(0,0,0)),
     end_time: time = Query(time(23,59,59))
 ):
     try:
-        if start_date > end_date:
-            raise HTTPException(status_code=400, detail="End date must be on or after start date.")
-        start_datetime = datetime.combine(start_date, start_time)
-        end_datetime = datetime.combine(end_date, end_time)
+        start_datetime = datetime.combine(selected_date, start_time)
+        end_datetime = datetime.combine(selected_date, end_time)
         if start_datetime >= end_datetime:
-            raise HTTPException(status_code=400, detail="End time must be after start time.")
+            raise HTTPException(status_code=400, detail="Finish time must be after start time.")
 
-        metrics_list = []
-        current_date = start_date
-        while current_date <= end_date:
-            with engine.begin() as conn:
-                day_start = datetime.combine(current_date, start_time)
-                day_end = datetime.combine(current_date, end_time)
-                
-                total = conn.execute(
-                    text("""SELECT COUNT(*) FROM abb_dbo_test 
-                            WHERE STR_TO_DATE(DateDebut, '%Y-%m-%d %H:%i:%s') 
-                            BETWEEN :start AND :end"""),
-                    {"start": day_start, "end": day_end}
-                ).scalar() or 0
+        with engine.begin() as conn:
+            total = conn.execute(
+                text("""SELECT COUNT(*) FROM abb_dbo_test 
+                        WHERE STR_TO_DATE(DateDebut, '%Y-%m-%d %H:%i:%s') 
+                        BETWEEN :start AND :end"""),
+                {"start": start_datetime, "end": end_datetime}
+            ).scalar() or 0
 
-                good = conn.execute(
-                    text("""SELECT COUNT(*) FROM abb_dbo_test 
-                            WHERE STR_TO_DATE(DateDebut, '%Y-%m-%d %H:%i:%s') 
-                            BETWEEN :start AND :end AND Result = 1"""),
-                    {"start": day_start, "end": day_end}
-                ).scalar() or 0
+            good = conn.execute(
+                text("""SELECT COUNT(*) FROM abb_dbo_test 
+                        WHERE STR_TO_DATE(DateDebut, '%Y-%m-%d %H:%i:%s') 
+                        BETWEEN :start AND :end AND Result = 1"""),
+                {"start": start_datetime, "end": end_datetime}
+            ).scalar() or 0
 
-                bad = conn.execute(
-                    text("""SELECT COUNT(*) FROM abb_dbo_test 
-                            WHERE STR_TO_DATE(DateDebut, '%Y-%m-%d %H:%i:%s') 
-                            BETWEEN :start AND :end AND (Result IS NULL OR Result != 1)"""),
-                    {"start": day_start, "end": day_end}
-                ).scalar() or 0
+            bad = conn.execute(
+                text("""SELECT COUNT(*) FROM abb_dbo_test 
+                        WHERE STR_TO_DATE(DateDebut, '%Y-%m-%d %H:%i:%s') 
+                        BETWEEN :start AND :end AND (Result IS NULL OR Result != 1)"""),
+                {"start": start_datetime, "end": end_datetime}
+            ).scalar() or 0
 
-                defect_result = conn.execute(
-                    text("""SELECT i.Defaut, COUNT(*) AS defect_count
-                            FROM abb_dbo_intervention i
-                            WHERE i.DateIntervention BETWEEN :start AND :end AND i.Defaut IS NOT NULL
-                            GROUP BY i.Defaut
-                            ORDER BY defect_count DESC"""),
-                    {"start": day_start, "end": day_end}
+            defect_result = conn.execute(
+                text("""SELECT i.Defaut, COUNT(*) AS defect_count
+                        FROM abb_dbo_intervention i
+                        WHERE i.DateIntervention BETWEEN :start AND :end AND i.Defaut IS NOT NULL
+                        GROUP BY i.Defaut
+                        ORDER BY defect_count DESC"""),
+                {"start": start_datetime, "end": end_datetime}
+            )
+            defects = {row.Defaut: row.defect_count for row in defect_result}
+
+            # Statistiques ref simple good/bad
+            ref_stats_query = text("""
+                SELECT 
+                    b.REF_AsteelFlash AS ref_asteel,
+                    SUM(CASE WHEN t.Result = 1 THEN 1 ELSE 0 END) AS good_count,
+                    SUM(CASE WHEN t.Result != 1 OR t.Result IS NULL THEN 1 ELSE 0 END) AS bad_count
+                FROM abb_dbo_board b
+                LEFT JOIN abb_dbo_test t ON t.Id_Board = b.Id
+                WHERE STR_TO_DATE(t.DateDebut, '%Y-%m-%d %H:%i:%s') BETWEEN :start AND :end
+                GROUP BY b.REF_AsteelFlash
+                ORDER BY b.REF_AsteelFlash
+            """)
+            ref_stats_result = conn.execute(ref_stats_query, {"start": start_datetime, "end": end_datetime})
+            ref_stats = [
+                RefStat(
+                    ref_asteel=row.ref_asteel,
+                    good_count=row.good_count or 0,
+                    bad_count=row.bad_count or 0
                 )
-                defects = {row.Defaut: row.defect_count for row in defect_result}
+                for row in ref_stats_result if row.ref_asteel
+            ]
 
-                ref_stats_query = text("""
-                    SELECT 
-                        b.REF_AsteelFlash AS ref_asteel,
-                        SUM(CASE WHEN t.Result = 1 THEN 1 ELSE 0 END) AS good_count,
-                        SUM(CASE WHEN t.Result != 1 OR t.Result IS NULL THEN 1 ELSE 0 END) AS bad_count
-                    FROM abb_dbo_board b
-                    LEFT JOIN abb_dbo_test t ON t.Id_Board = b.Id
-                    WHERE STR_TO_DATE(t.DateDebut, '%Y-%m-%d %H:%i:%s') BETWEEN :start AND :end
-                    GROUP BY b.REF_AsteelFlash
-                    ORDER BY b.REF_AsteelFlash
-                """)
-                ref_stats_result = conn.execute(ref_stats_query, {"start": day_start, "end": day_end})
-                ref_stats = [
-                    RefStat(
-                        ref_asteel=row.ref_asteel,
-                        good_count=row.good_count or 0,
-                        bad_count=row.bad_count or 0
-                    )
-                    for row in ref_stats_result if row.ref_asteel
-                ]
+            # Statistiques ref avec prix total
+            ref_price_stats_query = text("""
+                SELECT
+                    b.REF_AsteelFlash AS ref_asteel,
+                    SUM(t.Result = 1) AS good_count,
+                    SUM(t.Result != 1 OR t.Result IS NULL) AS bad_count,
+                    b.prix AS unit_price,
+                    (SUM(t.Result = 1) * b.prix) AS total_price
+                FROM abb_dbo_board b
+                LEFT JOIN abb_dbo_test t ON t.Id_Board = b.Id
+                WHERE STR_TO_DATE(t.DateDebut, '%Y-%m-%d %H:%i:%s') BETWEEN :start AND :end
+                GROUP BY b.REF_AsteelFlash, b.prix
+                ORDER BY b.REF_AsteelFlash
+            """)
+            ref_price_stats_result = conn.execute(ref_price_stats_query, {"start": start_datetime, "end": end_datetime})
+            ref_price_stats = [
+                RefPriceStat(
+                    ref_asteel=row.ref_asteel,
+                    good_count=row.good_count or 0,
+                    bad_count=row.bad_count or 0,
+                    unit_price=row.unit_price,
+                    total_price=row.total_price
+                )
+                for row in ref_price_stats_result if row.ref_asteel
+            ]
 
-                ref_price_stats_query = text("""
-                    SELECT
-                        b.REF_AsteelFlash AS ref_asteel,
-                        SUM(t.Result = 1) AS good_count,
-                        SUM(t.Result != 1 OR t.Result IS NULL) AS bad_count,
-                        b.prix AS unit_price,
-                        (SUM(t.Result = 1) * b.prix) AS total_price
-                    FROM abb_dbo_board b
-                    LEFT JOIN abb_dbo_test t ON t.Id_Board = b.Id
-                    WHERE STR_TO_DATE(t.DateDebut, '%Y-%m-%d %H:%i:%s') BETWEEN :start AND :end
-                    GROUP BY b.REF_AsteelFlash, b.prix
-                    ORDER BY b.REF_AsteelFlash
-                """)
-                ref_price_stats_result = conn.execute(ref_price_stats_query, {"start": day_start, "end": day_end})
-                ref_price_stats = [
-                    RefPriceStat(
-                        ref_asteel=row.ref_asteel,
-                        good_count=row.good_count or 0,
-                        bad_count=row.bad_count or 0,
-                        unit_price=row.unit_price,
-                        total_price=row.total_price
-                    )
-                    for row in ref_price_stats_result if row.ref_asteel
-                ]
-
-                yield_rate = (good / total * 100) if total > 0 else 0.0
-                total_revenue = sum(stat.total_price or 0 for stat in ref_price_stats)
-
-                metrics_list.append(QualityMetrics(
-                    date=current_date,
-                    total_quantity=total,
-                    good_quantity=good,
-                    bad_quantity=bad,
-                    defect_details=defects,
-                    ref_stats=ref_stats,
-                    ref_price_stats=ref_price_stats,
-                    yield_rate=yield_rate,
-                    total_revenue=total_revenue
-                ))
-                current_date += timedelta(days=1)
-
-        return metrics_list
+            return QualityMetrics(
+                date=selected_date,
+                total_quantity=total,
+                good_quantity=good,
+                bad_quantity=bad,
+                defect_details=defects,
+                ref_stats=ref_stats,
+                ref_price_stats=ref_price_stats,
+            )
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:

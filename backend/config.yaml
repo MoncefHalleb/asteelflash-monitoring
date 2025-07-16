@@ -1,0 +1,12 @@
+tables:
+  abb_dbo_board:
+    primary_key: Id
+    reference_field: REF_AsteelFlash
+  abb_dbo_test:
+    primary_key: Id
+    foreign_key: Id_Board
+    result_field: Result
+    date_field: DateDebut
+  abb_dbo_intervention:
+    primary_key: Id
+    date_field: DateIntervention
